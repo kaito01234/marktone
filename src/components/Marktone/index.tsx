@@ -364,7 +364,7 @@ const Marktone: React.FC<MarktoneProps> = ({
   };
 
   /**
-   * Handles the event when the file is pasted from the clipboard.
+   * Handles the event when content is pasted from the clipboard.
    *
    * @param event ClipboardEvent
    */
@@ -372,20 +372,93 @@ const Marktone: React.FC<MarktoneProps> = ({
     event: React.ClipboardEvent<HTMLTextAreaElement>,
   ): Promise<void> => {
     const clipboardData = event.clipboardData;
-    const files = Array.from<File>(clipboardData.files);
-
-    // When a file is copied on Finder, etc., only image files are stored in `files`.
-    // (However, in the case of PDF, the first page is stored as an image file, and the file itself is not stored.)
-    // To prevent unintended behavior when this specification is changed,
-    // limit the list to pass the upload process to images only.
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-
-    if (imageFiles.length < 1) {
-      return;
+    
+    // Handle file paste (images) - only if file uploading is supported
+    if (isSupportedFileUploading()) {
+      const files = Array.from<File>(clipboardData.files);
+      const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+      
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        await uploadFiles(imageFiles);
+        return;
+      }
     }
+    
+    // Handle text paste with rich link conversion
+    const plainText = clipboardData.getData('text/plain');
+    const htmlText = clipboardData.getData('text/html');
+    
+    // Check if we have rich content with links (like from browsers, GitHub, etc.)
+    if (htmlText && plainText && htmlText !== plainText) {
+      const markdownText = convertRichTextToMarkdown(plainText, htmlText);
+      if (markdownText !== plainText) {
+        event.preventDefault();
+        insertTextAtCursor(markdownText);
+      }
+    }
+  };
 
-    event.preventDefault();
-    await uploadFiles(imageFiles);
+  /**
+   * Converts rich text (HTML) to markdown format, focusing on links.
+   * Follows GitHub's behavior: only converts when there's actual link markup.
+   *
+   * @param plainText - The plain text from clipboard
+   * @param htmlText - The HTML text from clipboard
+   * @returns Markdown formatted text or original plain text
+   */
+  const convertRichTextToMarkdown = (plainText: string, htmlText: string): string => {
+    // Don't convert if it's just a plain URL without any markup
+    const urlRegex = /^https?:\/\/[^\s]+$/;
+    if (urlRegex.test(plainText.trim())) {
+      return plainText;
+    }
+    
+    // Create a temporary DOM element to parse HTML
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = htmlText;
+    
+    // Find all links in the HTML
+    const links = tempDiv.querySelectorAll('a[href]');
+    let result = plainText;
+    
+    // Convert each link to markdown format
+    links.forEach((link) => {
+      const href = link.getAttribute('href');
+      const text = link.textContent || '';
+      
+      if (href && text && href !== text) {
+        // Only convert if the link text is different from the URL
+        const markdownLink = `[${text}](${href})`;
+        result = result.replace(text, markdownLink);
+      }
+    });
+    
+    return result;
+  };
+
+  /**
+   * Inserts text at the current cursor position.
+   *
+   * @param text - Text to insert
+   */
+  const insertTextAtCursor = (text: string): void => {
+    const textArea = textAreaRef.current;
+    if (!textArea) return;
+    
+    const start = textArea.selectionStart;
+    const end = textArea.selectionEnd;
+    const currentText = rawText;
+    
+    const newText = currentText.slice(0, start) + text + currentText.slice(end);
+    setRawText(newText);
+    
+    // Set cursor position after the inserted text
+    setTimeout(() => {
+      const newPosition = start + text.length;
+      textArea.setSelectionRange(newPosition, newPosition);
+      textArea.focus();
+    }, 0);
   };
 
   const handleClickEditorTab = (): void => {
@@ -458,9 +531,7 @@ const Marktone: React.FC<MarktoneProps> = ({
               isSupportedFileUploading() ? handleDragLeave : doNothing
             }
             onDrop={isSupportedFileUploading() ? handleDropFile : doNothing}
-            onPaste={
-              isSupportedFileUploading() ? handlePasteFromClipboard : doNothing
-            }
+            onPaste={handlePasteFromClipboard}
             ref={reactTextAreaAutocompleteRef}
             innerRef={(textAreaEl): void => {
               textAreaRef.current = textAreaEl;
